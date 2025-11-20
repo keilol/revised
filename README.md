@@ -2180,92 +2180,102 @@ function AddWindow(options)
     return menu
 end
 
--- ========================================================
--- COMPLETE MERGED SCRIPT
--- Aimbot + Visible FOV + Silent Aim (MainEvent UpdateMousePosI2)
--- Silent Aim uses Raycast / FireServer interception for MainEvent
--- UI: custom (AddWindow/AddTab/AddSection/AddToggle/AddSlider/AddDropdown/AddTextbox/AddButton/AddList)
--- ========================================================
+-- SAFE merged aimbot + visible FOV + safe silent sender + Checks tab + Friend/Team/Group checks + Whitelist
+-- Use in YOUR OWN ROBLOX PLACE only. Requires a server RemoteEvent "MainEvent" in ReplicatedStorage.
 
--- CALLBACKS (single definitions)
-local function onToggleChanged(name, value) print(name.." = "..tostring(value)) end
-local function onSliderChanged(name, value) print(name.." = "..tostring(value)) end
-local function onDropdownChanged(name, value) print(name.." = "..tostring(value)) end
-local function onTextboxChanged(name, value) print(name.." = "..tostring(value)) end
-local function onButtonPressed(name) print(name.." pressed") end
+-- ======================
+-- Helpers / Callbacks
+-- ======================
+local function onToggleChanged(name, value) print(("Toggle %s -> %s"):format(name, tostring(value))) end
+local function onSliderChanged(name, value) print(("Slider %s -> %s"):format(name, tostring(value))) end
+local function onDropdownChanged(name, value) print(("Dropdown %s -> %s"):format(name, tostring(value))) end
+local function onTextboxChanged(name, value) print(("Textbox %s -> %s"):format(name, tostring(value))) end
+local function onButtonPressed(name) print(("Button %s pressed"):format(name)) end
 
--- SERVICES
+-- ======================
+-- Services
+-- ======================
 local Players = game:GetService("Players")
-local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = workspace
 
 local LocalPlayer = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
+local Camera = Workspace.CurrentCamera
 
--- SAFE Drawing availability
-local okDrawing, Drawing = pcall(function() return Drawing end)
+-- Drawing API check
+local drawing_ok, Drawing = pcall(function() return Drawing end)
 
--- ===============
--- STATE / SETTINGS
--- ===============
--- Aimbot (left)
-local aimbotOn = false
+-- ======================
+-- Config / State
+-- ======================
+-- Aimbot (camera)
+local aimbot_enabled = false
 local aimbot_holding = false
 local aimbot_target = nil
-local target_part_name = "Head"
 
-local fov_enabled = true
-local fov_radius = 90
+-- Aimbot settings
+local aim_target_part = "Head" -- Head, HumanoidRootPart, UpperTorso, LowerTorso, Nearest part
+local aim_fov_enabled = true
+local aim_fov_radius = 120
+local aim_smooth_enabled = false
+local aim_smooth_value = 5 -- 1..10
+local aim_prediction_enabled = false
+local aim_prediction_amount = 0 -- multiplier
 
-local smooth_enabled = false
-local smooth_value = 5
-
-local prediction_enabled = false
-local prediction_amount = 0
-
--- Silent Aim (right)
+-- Silent sender settings (safe)
 local silent_enabled = false
 local silent_fov_enabled = true
-local silent_fov_radius = 90
-
+local silent_fov_radius = 120
+local silent_target_part = "Head"
 local silent_prediction_enabled = false
 local silent_prediction_amount = 0
+local silent_hit_chance = 100 -- percent 0..100
 
-local silent_target_part_name = "Head"
+-- Checks
+local checks_alive = true
+local checks_wall = true
 
--- Silent accuracy/hit chance
-local silent_hit_chance = 100 -- percentage (0-100)
-local silent_custom_accuracy = 100 -- from textbox fallback
+-- Social / whitelist
+local ignore_friends = true
+local ignore_same_team = true
+local ignore_same_group = true
+local whitelist_enabled = false
+local group_id = 0 -- set your group id if using group check
 
--- Internal runtime targets
-local currentTarget = nil -- used by aimbot (on hold)
-local silentTarget = nil  -- best candidate for silent aim (updated each frame)
+local whitelist = {}         -- set of UserIds -> true
+local whitelist_names = {}   -- readable list of names for UI display
+
+-- Whitelist UI state
+local player_dropdown_list = {} -- names list for dropdown
+local selected_dropdown_name = nil
+
+-- Runtime
+local silent_candidate = nil
 
 -- Drawing circles
-local fov_circle, silent_fov_circle
-if okDrawing and Drawing then
-    fov_circle = Drawing.new("Circle")
-    fov_circle.Color = Color3.fromRGB(255,255,255)
-    fov_circle.Thickness = 2
-    fov_circle.Radius = fov_radius
-    fov_circle.Filled = false
-    fov_circle.NumSides = 100
-    fov_circle.Transparency = 1
-    fov_circle.Visible = fov_enabled
+local aim_circle, silent_circle
+if drawing_ok and Drawing then
+    aim_circle = Drawing.new("Circle")
+    aim_circle.Color = Color3.fromRGB(255,255,255)
+    aim_circle.Thickness = 2
+    aim_circle.NumSides = 100
+    aim_circle.Filled = false
+    aim_circle.Radius = aim_fov_radius
+    aim_circle.Visible = aim_fov_enabled
 
-    silent_fov_circle = Drawing.new("Circle")
-    silent_fov_circle.Color = Color3.fromRGB(0,255,255) -- cyan for silent
-    silent_fov_circle.Thickness = 2
-    silent_fov_circle.Radius = silent_fov_radius
-    silent_fov_circle.Filled = false
-    silent_fov_circle.NumSides = 100
-    silent_fov_circle.Transparency = 1
-    silent_fov_circle.Visible = silent_fov_enabled
+    silent_circle = Drawing.new("Circle")
+    silent_circle.Color = Color3.fromRGB(0,255,255)
+    silent_circle.Thickness = 2
+    silent_circle.NumSides = 100
+    silent_circle.Filled = false
+    silent_circle.Radius = silent_fov_radius
+    silent_circle.Visible = silent_fov_enabled
 end
 
 -- ======================
--- Utility / Targeting
+-- Utility functions
 -- ======================
 local function safeNumber(s, fallback)
     local n = tonumber(s)
@@ -2273,218 +2283,322 @@ local function safeNumber(s, fallback)
     return n
 end
 
-local function GetNearestPart(char)
-    local parts = {"Head","HumanoidRootPart","UpperTorso","LowerTorso"}
-    local mouse = UIS:GetMouseLocation()
-    local bestPart = nil
-    local bestDist = math.huge
+-- Friend / Team / Group checks
+local function IsFriend(plr)
+    if not plr or not plr.UserId then return false end
+    local ok, res = pcall(function() return LocalPlayer:IsFriendsWith(plr.UserId) end)
+    return ok and res
+end
 
-    for _, name in ipairs(parts) do
+local function IsSameTeam(plr)
+    if not plr or not LocalPlayer then return false end
+    if plr.Team and LocalPlayer.Team then
+        return plr.Team == LocalPlayer.Team
+    end
+    return false
+end
+
+local function IsSameGroup(plr)
+    if not plr or not group_id or group_id <= 0 then return false end
+    local ok, res = pcall(function() return plr:IsInGroup(group_id) end)
+    return ok and res
+end
+
+local function IsWhitelisted(plr)
+    if not plr or not plr.UserId then return false end
+    return whitelist[plr.UserId] == true
+end
+
+-- Alive check
+local function IsAlive(player)
+    if not player or not player.Character then return false end
+    local hum = player.Character:FindFirstChildOfClass("Humanoid")
+    if not hum then return false end
+    if checks_alive and hum.Health <= 0 then return false end
+    return true
+end
+
+-- Wall / visibility check (optimized occlusion test)
+local function IsVisible(player)
+    if not player or not player.Character then return false end
+    local hrp = player.Character:FindFirstChild("HumanoidRootPart") or player.Character:FindFirstChild("Head")
+    if not hrp then return false end
+
+    local origin = Camera.CFrame.Position
+    local targetPos = hrp.Position
+
+    local direction = targetPos - origin
+    if direction.Magnitude <= 0 then return true end
+
+    local rayParams = RaycastParams.new()
+    rayParams.FilterDescendantsInstances = {LocalPlayer.Character}
+    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+    rayParams.IgnoreWater = true
+
+    local ignoreNames = {
+        ["Handle"] = true, ["Accessory"] = true, ["Ring"] = true,
+        ["Decal"] = true, ["Grass"] = true, ["Foliage"] = true,
+        ["Drop"] = true, ["GunDrop"] = true, ["Bullet"] = true,
+    }
+
+    local result = Workspace:Raycast(origin, direction.Unit * math.min(direction.Magnitude, 1000), rayParams)
+    if not result then
+        return true -- nothing hit between camera and target
+    end
+
+    local hitInst = result.Instance
+    if not hitInst then return true end
+
+    if player.Character and hitInst:IsDescendantOf(player.Character) then
+        return true
+    end
+
+    local size = (hitInst.Size and (hitInst.Size.Magnitude or 0)) or 0
+    if size < 2 then
+        local nm = hitInst.Name
+        if nm and ignoreNames[nm] then
+            return true
+        end
+        local class = hitInst.ClassName
+        if class == "MeshPart" or class == "UnionOperation" or class == "Part" then
+            if size < 0.5 then
+                return true
+            end
+        end
+    end
+
+    if hitInst.Transparency and hitInst.Transparency > 0.6 then
+        return true
+    end
+
+    return false
+end
+
+-- Get nearest part to mouse (for "Nearest part" selection)
+local function GetNearestPart(char)
+    if not char then return nil end
+    local candidates = {"Head","HumanoidRootPart","UpperTorso","LowerTorso"}
+    local mouse = UserInputService:GetMouseLocation()
+    local best, bestDist = nil, math.huge
+    for _, name in ipairs(candidates) do
         local part = char:FindFirstChild(name)
         if part then
             local pos, onScreen = Camera:WorldToViewportPoint(part.Position)
             if onScreen then
-                local d = (Vector2.new(pos.X,pos.Y) - mouse).Magnitude
-                if d < bestDist then
-                    bestDist = d
-                    bestPart = part
+                local dist = (Vector2.new(pos.X, pos.Y) - mouse).Magnitude
+                if dist < bestDist then
+                    bestDist = dist
+                    best = part
                 end
             end
         end
     end
-
-    return bestPart
-end
-
-local function GetClosestPlayerGeneric(useFov, radius)
-    local mouse = UIS:GetMouseLocation()
-    local best = nil
-    local bestDist = math.huge
-
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LocalPlayer and plr.Character and plr.Character.Parent then
-            local head = plr.Character:FindFirstChild("Head")
-            local hum = plr.Character:FindFirstChild("Humanoid")
-            if head and hum and hum.Health > 0 then
-                local pos, onScreen = Camera:WorldToViewportPoint(head.Position)
-                if onScreen then
-                    local d = (Vector2.new(pos.X,pos.Y) - mouse).Magnitude
-                    if (not useFov) or (d <= radius) then
-                        if d < bestDist then
-                            bestDist = d
-                            best = plr
-                        end
-                    end
-                end
-            end
-        end
-    end
-
     return best
 end
 
--- Convenience wrappers
-local function GetClosestPlayerForAimbot()
-    return GetClosestPlayerGeneric(fov_enabled, fov_radius)
-end
-local function GetClosestPlayerForSilent()
-    return GetClosestPlayerGeneric(silent_fov_enabled, silent_fov_radius)
-end
+-- Closest player search now respects checks + friend/team/group/whitelist
+local function GetClosestPlayerWithinFov(useFov, radius)
+    local mouse = UserInputService:GetMouseLocation()
+    local best, bestDist = nil, math.huge
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character and plr.Character.Parent then
+            -- social filters
+            if ignore_friends and IsFriend(plr) then continue end
+            if ignore_same_team and IsSameTeam(plr) then continue end
+            if ignore_same_group and IsSameGroup(plr) then continue end
+            if whitelist_enabled and IsWhitelisted(plr) then continue end
 
--- ======================
--- Input handling (aimbot)
--- ======================
-UIS.InputBegan:Connect(function(inp)
-    if inp.UserInputType == Enum.UserInputType.MouseButton2 then
-        aimbot_holding = true
-        currentTarget = GetClosestPlayerForAimbot()
-    end
-end)
+            if not IsAlive(plr) then continue end
 
-UIS.InputEnded:Connect(function(inp)
-    if inp.UserInputType == Enum.UserInputType.MouseButton2 then
-        aimbot_holding = false
-        currentTarget = nil
-    end
-end)
-
--- ======================
--- Silent target updater
--- update silentTarget every frame (so silent aim always has a candidate)
--- ======================
-RunService.RenderStepped:Connect(function()
-    silentTarget = GetClosestPlayerForSilent()
-end)
-
--- ======================
--- Silent Aim Hook for MainEvent UpdateMousePosI2
--- (Intercepts FireServer on MainEvent and replaces second arg with predicted target pos)
--- ======================
-do
-    local success = pcall(function() return getrawmetatable end)
-    if not success then
-        warn("[SilentAim] environment doesn't expose getrawmetatable; direct hook unavailable.")
-    end
-
-    -- Try to find MainEvent in ReplicatedStorage (common); if it's somewhere else user can change path
-    local MainEvent = ReplicatedStorage:FindFirstChild("MainEvent") or ReplicatedStorage:WaitForChild("MainEvent", 2) -- wait briefly
-
-    if MainEvent and success then
-        local mt = getrawmetatable(game)
-        local oldNamecall = mt.__namecall
-        local setreadonly = setreadonly or (make_writeable or nil)
-        local newc = newcclosure or function(fn) return fn end
-
-        -- try make writable
-        pcall(function()
-            if setreadonly then
-                setreadonly(mt, false)
-            else
-                -- older envs: some use make_writeable
-                if make_writeable then
-                    make_writeable(mt)
-                end
-            end
-        end)
-
-        mt.__namecall = newc(function(self, ...)
-            local method = getnamecallmethod and getnamecallmethod() or nil
-            local args = {...}
-
-            -- Only intercept FireServer on the MainEvent object
-            if method == "FireServer" and self == MainEvent and silent_enabled and silentTarget and silentTarget.Character and silentTarget.Character.Parent then
-                -- handle the specific 'UpdateMousePosI2' signature
-                if args[1] == "UpdateMousePosI2" then
-                    local char = silentTarget.Character
-                    local part
-                    if silent_target_part_name == "Nearest part" then
-                        part = GetNearestPart(char)
-                    else
-                        part = char:FindFirstChild(silent_target_part_name)
-                    end
-                    if not part then
-                        part = char:FindFirstChild("Head")
-                    end
-
-                    if part then
-                        -- decide hit chance roll
-                        local chanceValue = silent_hit_chance or silent_custom_accuracy or 100
-                        -- clamp 0..100
-                        chanceValue = math.clamp(tonumber(chanceValue) or 0, 0, 100)
-                        local roll = math.random(1,100)
-                        if roll <= chanceValue then
-                            -- build replacement pos + prediction
-                            local pos = part.Position
-                            if silent_prediction_enabled and char:FindFirstChild("HumanoidRootPart") then
-                                pos = pos + (char.HumanoidRootPart.Velocity * silent_prediction_amount)
-                            end
-
-                            -- Replace second argument (mouse pos) with vector3 pos
-                            args[2] = pos
-
-                            -- call original with modified args
-                            return oldNamecall(self, unpack(args))
+            local hum = plr.Character:FindFirstChild("Humanoid")
+            local head = plr.Character:FindFirstChild("Head")
+            if hum and head and hum.Health > 0 then
+                local pos, onScreen = Camera:WorldToViewportPoint(head.Position)
+                if onScreen then
+                    local dist = (Vector2.new(pos.X, pos.Y) - mouse).Magnitude
+                    if (not useFov) or (dist <= radius) then
+                        if checks_wall and not IsVisible(plr) then
+                            -- blocked by wall, skip
                         else
-                            -- miss: call original without changing args (let shot behave normally)
-                            return oldNamecall(self, ...)
+                            if dist < bestDist then
+                                bestDist = dist
+                                best = plr
+                            end
                         end
                     end
                 end
             end
-
-            return oldNamecall(self, ...)
-        end)
-
-        -- restore readonly (best effort)
-        pcall(function()
-            if setreadonly then
-                setreadonly(mt, true)
-            end
-        end)
-    else
-        warn("[SilentAim] MainEvent not found in ReplicatedStorage or getrawmetatable not available; silent aim hook not installed.")
+        end
     end
+    return best
 end
 
 -- ======================
--- Main RenderStepped (FOV drawing + aimbot camera)
+-- Input handling (aimbot camera)
+-- ======================
+UserInputService.InputBegan:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.MouseButton2 then
+        aimbot_holding = true
+        aimbot_target = GetClosestPlayerWithinFov(aim_fov_enabled, aim_fov_radius)
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.MouseButton2 then
+        aimbot_holding = false
+        aimbot_target = nil
+    end
+end)
+
+-- ======================
+-- Silent candidate update
+-- ======================
+RunService.RenderStepped:Connect(function()
+    silent_candidate = GetClosestPlayerWithinFov(silent_fov_enabled, silent_fov_radius)
+end)
+
+-- ======================
+-- Safe Sender to server (replaces hooks)
+-- Sends: MainEvent:FireServer("UpdateMousePosI2", Vector3)
+-- ======================
+local function RollHitChance(percent)
+    return math.random(1,100) <= math.clamp(percent or 100, 0, 100)
+end
+
+local function ResolveSilentTargetPart(character)
+    if not character then return nil end
+    if silent_target_part == "Nearest part" then
+        return GetNearestPart(character)
+    else
+        return character:FindFirstChild(silent_target_part)
+    end
+end
+
+local function SendUpdateMousePosToServer()
+    local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
+    if not mainEvent or not silent_candidate or not silent_candidate.Character then
+        return
+    end
+
+    -- re-check social/whitelist/alive/visibility just before sending
+    if ignore_friends and IsFriend(silent_candidate) then return end
+    if ignore_same_team and IsSameTeam(silent_candidate) then return end
+    if ignore_same_group and IsSameGroup(silent_candidate) then return end
+    if whitelist_enabled and IsWhitelisted(silent_candidate) then return end
+    if not IsAlive(silent_candidate) then return end
+    if checks_wall and not IsVisible(silent_candidate) then return end
+
+    local char = silent_candidate.Character
+    local part = ResolveSilentTargetPart(char)
+    if not part then
+        part = char:FindFirstChild("Head")
+    end
+    if not part then return end
+
+    -- hit chance
+    if not RollHitChance(silent_hit_chance) then
+        return -- miss -> skip
+    end
+
+    -- prediction
+    local pos = part.Position
+    if silent_prediction_enabled and char:FindFirstChild("HumanoidRootPart") then
+        pos = pos + (char.HumanoidRootPart.Velocity * silent_prediction_amount)
+    end
+
+    pcall(function()
+        mainEvent:FireServer("UpdateMousePosI2", pos)
+    end)
+end
+
+-- periodic sending
+local silent_send_interval = 0.03
+local silent_accumulator = 0
+RunService.RenderStepped:Connect(function(dt)
+    if not silent_enabled then
+        silent_accumulator = 0
+        return
+    end
+    silent_accumulator = silent_accumulator + dt
+    if silent_accumulator >= silent_send_interval then
+        silent_accumulator = 0
+        SendUpdateMousePosToServer()
+    end
+end)
+
+-- manual send key (Send Once)
+local sendOnceKey = Enum.KeyCode.F
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == sendOnceKey then
+        if silent_candidate then
+            SendUpdateMousePosToServer()
+            print("[Client] Sent single UpdateMousePosI2 (manual key).")
+        else
+            print("[Client] No silent candidate to send.")
+        end
+    end
+end)
+
+-- ======================
+-- Render step: draw FOVs + camera aimbot
 -- ======================
 RunService.RenderStepped:Connect(function(dt)
-    local mouse = UIS:GetMouseLocation()
-
-    -- update visible circles
-    if fov_circle then
-        fov_circle.Position = mouse
-        fov_circle.Radius = fov_radius
-        fov_circle.Visible = fov_enabled
+    local mouse = UserInputService:GetMouseLocation()
+    if aim_circle then
+        aim_circle.Position = mouse
+        aim_circle.Radius = aim_fov_radius
+        aim_circle.Visible = aim_fov_enabled
     end
-    if silent_fov_circle then
-        silent_fov_circle.Position = mouse
-        silent_fov_circle.Radius = silent_fov_radius
-        silent_fov_circle.Visible = silent_fov_enabled
+    if silent_circle then
+        silent_circle.Position = mouse
+        silent_circle.Radius = silent_fov_radius
+        silent_circle.Visible = silent_fov_enabled
     end
 
-    -- aimbot (camera)
-    if aimbotOn and aimbot_holding and currentTarget and currentTarget.Character and currentTarget.Character.Parent then
-        local targetPart
-        if target_part_name == "Nearest part" then
-            targetPart = GetNearestPart(currentTarget.Character)
+    -- Camera aimbot
+    if aimbot_enabled and aimbot_holding and aimbot_target and aimbot_target.Character then
+        if ignore_friends and IsFriend(aimbot_target) then
+            aimbot_target = nil
+            return
+        end
+        if ignore_same_team and IsSameTeam(aimbot_target) then
+            aimbot_target = nil
+            return
+        end
+        if ignore_same_group and IsSameGroup(aimbot_target) then
+            aimbot_target = nil
+            return
+        end
+        if whitelist_enabled and IsWhitelisted(aimbot_target) then
+            aimbot_target = nil
+            return
+        end
+
+        if not IsAlive(aimbot_target) then
+            aimbot_target = nil
+            return
+        end
+        if checks_wall and not IsVisible(aimbot_target) then
+            aimbot_target = nil
+            return
+        end
+
+        local tpart
+        if aim_target_part == "Nearest part" then
+            tpart = GetNearestPart(aimbot_target.Character)
         else
-            targetPart = currentTarget.Character:FindFirstChild(target_part_name)
+            tpart = aimbot_target.Character:FindFirstChild(aim_target_part)
         end
-        if not targetPart then
-            targetPart = currentTarget.Character:FindFirstChild("Head")
-        end
-
-        if targetPart then
-            local aimPos = targetPart.Position
-            if prediction_enabled and currentTarget.Character:FindFirstChild("HumanoidRootPart") then
-                aimPos = aimPos + (currentTarget.Character.HumanoidRootPart.Velocity * prediction_amount)
+        if not tpart then tpart = aimbot_target.Character:FindFirstChild("Head") end
+        if tpart then
+            local aimPos = tpart.Position
+            if aim_prediction_enabled and aimbot_target.Character:FindFirstChild("HumanoidRootPart") then
+                aimPos = aimPos + (aimbot_target.Character.HumanoidRootPart.Velocity * aim_prediction_amount)
             end
-
             local desired = CFrame.new(Camera.CFrame.Position, aimPos)
-            if smooth_enabled then
-                local alpha = math.clamp(smooth_value/10, 0, 1)
+            if aim_smooth_enabled then
+                local alpha = math.clamp(aim_smooth_value / 10, 0, 1)
                 Camera.CFrame = Camera.CFrame:Lerp(desired, alpha)
             else
                 Camera.CFrame = desired
@@ -2494,7 +2608,66 @@ RunService.RenderStepped:Connect(function(dt)
 end)
 
 -- ======================
--- UI BUILD (custom)
+-- Whitelist helpers (UI management)
+-- ======================
+local function RebuildPlayerDropdownList()
+    player_dropdown_list = {}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        table.insert(player_dropdown_list, plr.Name)
+    end
+    -- choose first if none selected
+    if #player_dropdown_list > 0 and (not selected_dropdown_name or selected_dropdown_name == "") then
+        selected_dropdown_name = player_dropdown_list[1]
+    end
+    return player_dropdown_list
+end
+
+local function FindPlayerByName(name)
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr.Name == name then return plr end
+    end
+    return nil
+end
+
+local function AddToWhitelistByName(name)
+    local plr = FindPlayerByName(name)
+    if not plr then return false end
+    whitelist[plr.UserId] = true
+    whitelist_names[plr.Name] = true
+    return true
+end
+
+local function RemoveFromWhitelistByName(name)
+    local plr = FindPlayerByName(name)
+    if not plr then
+        -- maybe user removed; try by stored names
+        for id, _ in pairs(whitelist) do
+            -- try to find name by id
+            local p = Players:GetPlayerByUserId(id)
+            if p and p.Name == name then
+                whitelist[id] = nil
+                whitelist_names[name] = nil
+                return true
+            end
+        end
+        return false
+    end
+    whitelist[plr.UserId] = nil
+    whitelist_names[plr.Name] = nil
+    return true
+end
+
+local function BuildWhitelistDisplay()
+    local list = {}
+    for name, _ in pairs(whitelist_names) do
+        table.insert(list, name)
+    end
+    table.sort(list)
+    return list
+end
+
+-- ======================
+-- UI BUILD (custom UI)
 -- ======================
 local window = AddWindow()
 
@@ -2502,124 +2675,91 @@ do
     local combat = window:AddTab({name = "combat"})
     combat:AddTab({name = "legitbot"})
 
-    -- LEFT: LEGITBOT / AIMBOT section
+    -- left side: aimbot
     local legit = combat:AddSection({
         tab = "legitbot",
         name = "Aimbot",
         height = "fill"
     })
 
-    -- Aimbot enable
-    local t = legit:AddToggle({
+    local en = legit:AddToggle({
         name = "Enabled",
         default = false,
         callback = function(v)
-            aimbotOn = v
-            onToggleChanged("Enabled", v)
+            aimbot_enabled = v
+            onToggleChanged("Aimbot Enabled", v)
         end
     })
-    if t and type(t.AddKeybind) == "function" then
-        t:AddKeybind()
-    end
+    if en and type(en.AddKeybind) == "function" then en:AddKeybind() end
 
-    -- FOV toggle (aimbot)
     legit:AddToggle({
         name = "Fov",
-        default = true,
+        default = aim_fov_enabled,
         callback = function(v)
-            fov_enabled = v
-            onToggleChanged("Fov", v)
+            aim_fov_enabled = v
+            onToggleChanged("Aimbot Fov", v)
         end
     })
 
-    -- Smoothness toggle
+    legit:AddSlider({
+        name = "Fov",
+        min = 10,
+        max = 400,
+        default = aim_fov_radius,
+        callback = function(v)
+            aim_fov_radius = v
+            onSliderChanged("Aimbot Fov", v)
+        end
+    })
+
     legit:AddToggle({
         name = "Enable Smoothness",
-        default = false,
+        default = aim_smooth_enabled,
         callback = function(v)
-            smooth_enabled = v
-            onToggleChanged("Enable Smoothness", v)
+            aim_smooth_enabled = v
+            onToggleChanged("Aim Smoothness", v)
         end
     })
 
-    -- Prediction toggle (aimbot)
-    legit:AddToggle({
-        name = "Enable Prediction",
-        default = false,
-        callback = function(v)
-            prediction_enabled = v
-            onToggleChanged("Enable Prediction", v)
-        end
-    })
-
-    -- Prediction textbox (aimbot)
-    legit:AddTextbox({
-        name = "Prediction",
-        default = tostring(prediction_amount),
-        callback = function(text)
-            prediction_amount = safeNumber(text, 0)
-            onTextboxChanged("Prediction", text)
-        end
-    })
-
-    -- Smoothness slider
     legit:AddSlider({
         name = "Smoothness",
         min = 1,
         max = 10,
-        default = smooth_value,
+        default = aim_smooth_value,
         callback = function(v)
-            smooth_value = v
-            onSliderChanged("Smoothness", v)
+            aim_smooth_value = v
+            onSliderChanged("Aim Smoothness", v)
         end
     })
 
-    -- FOV slider (aimbot)
-    legit:AddSlider({
-        name = "Fov",
-        min = 10,
-        max = 300,
-        default = fov_radius,
+    legit:AddToggle({
+        name = "Enable Prediction",
+        default = aim_prediction_enabled,
         callback = function(v)
-            fov_radius = v
-            onSliderChanged("Fov", v)
+            aim_prediction_enabled = v
+            onToggleChanged("Aim Prediction", v)
         end
     })
 
-    -- Target selection dropdown (aimbot)
+    legit:AddTextbox({
+        name = "Prediction Amount",
+        default = tostring(aim_prediction_amount),
+        callback = function(txt)
+            aim_prediction_amount = safeNumber(txt, 0)
+            onTextboxChanged("Aim Prediction", txt)
+        end
+    })
+
     legit:AddDropdown({
         name = "Target selection",
-        list = {
-            "Head",
-            "HumanoidRootPart",
-            "UpperTorso",
-            "LowerTorso",
-            "Nearest part"
-        },
+        list = {"Head","HumanoidRootPart","UpperTorso","LowerTorso","Nearest part"},
         callback = function(v)
-            target_part_name = v
-            onDropdownChanged("Target selection", v)
+            aim_target_part = v
+            onDropdownChanged("Aim Target", v)
         end
     })
 
-    -- Hitboxes (informational)
-    legit:AddDropdown({
-        name = "Hitboxes",
-        list = {"Head", "Torso", "Arms", "Legs"},
-        callback = function(v)
-            onDropdownChanged("Hitboxes", v)
-        end
-    })
-
-    -- Apply button
-    legit:AddButton({
-        name = "Apply",
-        callback = function()
-            onButtonPressed("Apply")
-        end
-    })
-
-    -- RIGHT: Silent Aim section
+    -- right side: silent aim
     local silent = combat:AddSection({
         tab = "legitbot",
         name = "Silent Aim",
@@ -2627,31 +2767,28 @@ do
         side = "Right"
     })
 
-    -- Silent Aim enable
     silent:AddToggle({
         name = "Silent Aim",
-        default = false,
+        default = silent_enabled,
         callback = function(v)
             silent_enabled = v
             onToggleChanged("Silent Aim", v)
         end
     })
 
-    -- Silent: FOV toggle
     silent:AddToggle({
         name = "Silent Fov",
-        default = true,
+        default = silent_fov_enabled,
         callback = function(v)
             silent_fov_enabled = v
             onToggleChanged("Silent Fov", v)
         end
     })
 
-    -- Silent: FOV slider
     silent:AddSlider({
         name = "Silent Fov Radius",
         min = 10,
-        max = 300,
+        max = 400,
         default = silent_fov_radius,
         callback = function(v)
             silent_fov_radius = v
@@ -2659,73 +2796,239 @@ do
         end
     })
 
-    -- Silent: Prediction toggle
     silent:AddToggle({
         name = "Silent Prediction",
-        default = false,
+        default = silent_prediction_enabled,
         callback = function(v)
             silent_prediction_enabled = v
             onToggleChanged("Silent Prediction", v)
         end
     })
 
-    -- Silent: Prediction textbox
     silent:AddTextbox({
         name = "Silent Prediction Amount",
         default = tostring(silent_prediction_amount),
-        callback = function(text)
-            silent_prediction_amount = safeNumber(text, 0)
-            onTextboxChanged("Silent Prediction Amount", text)
+        callback = function(txt)
+            silent_prediction_amount = safeNumber(txt, 0)
+            onTextboxChanged("Silent Prediction Amount", txt)
         end
     })
 
-    -- Silent: Target selection
     silent:AddDropdown({
         name = "Silent Target selection",
-        list = {
-            "Head",
-            "HumanoidRootPart",
-            "UpperTorso",
-            "LowerTorso",
-            "Nearest part"
-        },
+        list = {"Head","HumanoidRootPart","UpperTorso","LowerTorso","Nearest part"},
         callback = function(v)
-            silent_target_part_name = v
-            onDropdownChanged("Silent Target selection", v)
+            silent_target_part = v
+            onDropdownChanged("Silent Target", v)
         end
     })
 
-silent:AddDropdown({
-    name = "Silent HitChance",
-    list = {"25","50","75","100"},
-    callback = function(v)
-        silent_hit_chance = tonumber(v) or silent_hit_chance
-        onDropdownChanged("Silent HitChance", v)
-    end
-})
+    -- hit chance as dropdown (UI libs often don't provide AddList)
+    silent:AddDropdown({
+        name = "Silent HitChance",
+        list = {"25","50","75","100"},
+        callback = function(v)
+            silent_hit_chance = tonumber(v) or silent_hit_chance
+            onDropdownChanged("Silent HitChance", v)
+        end
+    })
 
-    -- Silent: Custom accuracy textbox (0-100)
     silent:AddTextbox({
         name = "Silent: Custom Accuracy (0-100)",
-        default = tostring(silent_custom_accuracy),
-        callback = function(text)
-            silent_custom_accuracy = math.clamp(tonumber(text) or silent_custom_accuracy, 0, 100)
-            silent_hit_chance = silent_custom_accuracy
-            onTextboxChanged("Silent: Custom Accuracy", text)
+        default = tostring(silent_hit_chance),
+        callback = function(txt)
+            local n = math.clamp(tonumber(txt) or silent_hit_chance, 0, 100)
+            silent_hit_chance = n
+            onTextboxChanged("Silent Custom Accuracy", txt)
         end
     })
 
-    -- Silent: Apply button (optional)
     silent:AddButton({
         name = "Silent Apply",
-        callback = function()
-            onButtonPressed("Silent Apply")
+        callback = function() onButtonPressed("Silent Apply") end
+    })
+
+    -- ======================
+    -- New: Checks tab + toggles
+    -- ======================
+    local checksTab = window:AddTab({name = "checks"})
+    local checksSectionObj
+    if checksTab and checksTab.AddSection then
+        checksSectionObj = checksTab:AddSection({name = "Checks", height = "fill"})
+    else
+        checksSectionObj = combat:AddSection({tab = "legitbot", name = "Checks", height = "fill", side = "Right"})
+    end
+
+    checksSectionObj:AddToggle({
+        name = "Wall Check",
+        default = checks_wall,
+        callback = function(v)
+            checks_wall = v
+            onToggleChanged("Wall Check", v)
         end
     })
 
-    -- Keep other top tabs
+    checksSectionObj:AddToggle({
+        name = "Alive Check",
+        default = checks_alive,
+        callback = function(v)
+            checks_alive = v
+            onToggleChanged("Alive Check", v)
+        end
+    })
+
+    checksSectionObj:AddToggle({
+        name = "Ignore Friends",
+        default = ignore_friends,
+        callback = function(v)
+            ignore_friends = v
+            onToggleChanged("Ignore Friends", v)
+        end
+    })
+
+    checksSectionObj:AddToggle({
+        name = "Ignore Same Team",
+        default = ignore_same_team,
+        callback = function(v)
+            ignore_same_team = v
+            onToggleChanged("Ignore Same Team", v)
+        end
+    })
+
+    checksSectionObj:AddToggle({
+        name = "Ignore Same Group",
+        default = ignore_same_group,
+        callback = function(v)
+            ignore_same_group = v
+            onToggleChanged("Ignore Same Group", v)
+        end
+    })
+
+    checksSectionObj:AddTextbox({
+        name = "Group ID",
+        default = tostring(group_id),
+        callback = function(txt)
+            group_id = tonumber(txt) or group_id
+            onTextboxChanged("Group ID", txt)
+        end
+    })
+
+    checksSectionObj:AddToggle({
+        name = "Enable Whitelist",
+        default = whitelist_enabled,
+        callback = function(v)
+            whitelist_enabled = v
+            onToggleChanged("Whitelist Enabled", v)
+        end
+    })
+
+    -- Whitelist UI: player dropdown, add/remove, refresh, and display
+    RebuildPlayerDropdownList()
+    checksSectionObj:AddDropdown({
+        name = "Player List",
+        list = player_dropdown_list,
+        callback = function(v)
+            selected_dropdown_name = v
+            onDropdownChanged("Player List Selected", v)
+        end
+    })
+
+    checksSectionObj:AddButton({
+        name = "Refresh Player List",
+        callback = function()
+            RebuildPlayerDropdownList()
+            onButtonPressed("Refresh Player List")
+            print("[UI] Player list refreshed. Re-open dropdown to see changes.")
+        end
+    })
+
+    checksSectionObj:AddButton({
+        name = "Add Selected to Whitelist",
+        callback = function()
+            if not selected_dropdown_name then
+                print("[Whitelist] No player selected.")
+                return
+            end
+            if AddToWhitelistByName(selected_dropdown_name) then
+                print(("[Whitelist] Added %s"):format(selected_dropdown_name))
+            else
+                print(("[Whitelist] Failed to add %s (player not found)."):format(selected_dropdown_name))
+            end
+            onButtonPressed("Add Selected to Whitelist")
+        end
+    })
+
+    checksSectionObj:AddButton({
+        name = "Remove Selected from Whitelist",
+        callback = function()
+            if not selected_dropdown_name then
+                print("[Whitelist] No player selected.")
+                return
+            end
+            if RemoveFromWhitelistByName(selected_dropdown_name) then
+                print(("[Whitelist] Removed %s"):format(selected_dropdown_name))
+            else
+                print(("[Whitelist] Failed to remove %s."):format(selected_dropdown_name))
+            end
+            onButtonPressed("Remove Selected from Whitelist")
+        end
+    })
+
+    -- Show whitelist (AddList if available else Textbox)
+    if checksSectionObj.AddList then
+        checksSectionObj:AddList({
+            name = "Whitelist",
+            list = BuildWhitelistDisplay(),
+            callback = function(v) onDropdownChanged("Whitelist item clicked", v) end
+        })
+    else
+        checksSectionObj:AddTextbox({
+            name = "Whitelist (names comma-separated)",
+            default = table.concat(BuildWhitelistDisplay(), ", "),
+            callback = function(txt)
+                -- naive parse: user can paste a comma-separated list to override whitelist
+                local newList = {}
+                for name in string.gmatch(txt, "([^,]+)") do
+                    local clean = name:gsub("^%s*(.-)%s*$", "%1")
+                    if clean ~= "" then
+                        table.insert(newList, clean)
+                    end
+                end
+                -- clear and add (attempt)
+                whitelist = {}
+                whitelist_names = {}
+                for _, name in ipairs(newList) do
+                    AddToWhitelistByName(name)
+                end
+                onTextboxChanged("Whitelist (manual)", txt)
+            end
+        })
+    end
+
+    checksSectionObj:AddButton({
+        name = "Run Quick Scan",
+        callback = function()
+            local count = 0
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p ~= LocalPlayer and p.Character and p.Character.Parent then
+                    local pass = true
+                    if ignore_friends and IsFriend(p) then pass = false end
+                    if ignore_same_team and IsSameTeam(p) then pass = false end
+                    if ignore_same_group and IsSameGroup(p) then pass = false end
+                    if whitelist_enabled and IsWhitelisted(p) then pass = false end
+                    if not IsAlive(p) then pass = false end
+                    if checks_wall and not IsVisible(p) then pass = false end
+                    if pass then count = count + 1 end
+                end
+            end
+            print(("[Checks] Valid targets found: %d"):format(count))
+            onButtonPressed("Run Quick Scan")
+        end
+    })
+	
+
     combat:AddTab({name = "triggerbot"})
     combat:AddTab({name = "other"})
 end
 
--- End of script
+-- End of safe script
