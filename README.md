@@ -1,184 +1,190 @@
---====================================================--
--- SILENT AIM SYSTEM (MAIN EVENT / UpdateMousePosI2)
---====================================================--
+-- if not getgenv().directory then
+--     game.Players.LocalPlayer:Kick("Script directory was not found!\nNOTE: THE SERVER MAY BE DOWN \nplease dm 1catlol if you have entered yours correctly")
+--     wait(3)
+--     game.Players.LocalPlayer:Destroy()
+--     return LPH_CRASH()
+-- end
 
-local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
-local UIS = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+-- hookfunction security
+    local exe_name, exe_version = identifyexecutor()
+    local function home999() end
+    local function home888() end
 
---===============--
--- Silent Table
---===============--
+    if exe_name ~= "Wave Windows" then
+        hookfunction(home888, home999)
+        if isfunctionhooked(home888) == false then
+            game.Players.LocalPlayer:Destroy()
+            return LPH_CRASH()
+        end
+    end 
+    
+    local function check_env(env)
+        for _, func in env do
+            if type(func) ~= "function" then
+                continue
+            end
 
-local Silent = {
-    Enabled = true,
-    FOVEnabled = true,
-    FOV = 120,
-    HitChance = 100,
-    PredictionEnabled = true,
-    PredictionAmount = 0.12,
-    ResolverEnabled = false,
-    TargetPart = "Head",      -- Or "Nearest"
-    Target = nil,
-}
+            local functionhook = isfunctionhooked(func)
 
-local SmartParts = {
-    "Head", "UpperTorso", "LowerTorso", "HumanoidRootPart",
-    "LeftUpperArm", "LeftLowerArm", "LeftHand",
-    "RightUpperArm", "RightLowerArm", "RightHand",
-    "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
-    "RightUpperLeg", "RightLowerLeg", "RightFoot"
-}
-
---========================--
--- FOV CIRCLE
---========================--
-
-local FOV = Drawing.new("Circle")
-FOV.Color = Color3.fromRGB(255,0,0)
-FOV.Thickness = 2
-FOV.Filled = false
-FOV.Radius = Silent.FOV
-FOV.Visible = true
-
---========================--
--- Smart Nearest Part
---========================--
-
-local function GetNearestPart(char)
-    local mouse = UIS:GetMouseLocation()
-    local best, bestDist = nil, math.huge
-
-    for _, name in ipairs(SmartParts) do
-        local part = char:FindFirstChild(name)
-        if part then
-            local pos, onScreen = Camera:WorldToViewportPoint(part.Position)
-            if onScreen then
-                local dist = (Vector2.new(pos.X,pos.Y) - mouse).Magnitude
-                if dist < bestDist then
-                    bestDist = dist
-                    best = part
-                end
+            if functionhook then
+                game.Players.LocalPlayer:Destroy()
+                return LPH_CRASH()
             end
         end
     end
 
-    return best
+    check_env( getgenv() )
+    check_env( getrenv() )
+--
+
+local Lua_Fetch_Connections = getconnections
+local Lua_Fetch_Upvalues = getupvalues
+local Lua_Hook = hookfunction 
+local Lua_Hook_Method = hookmetamethod
+local Lua_Unhook = restorefunction
+local Lua_Replace_Function = replaceclosure
+local Lua_Set_Upvalue = setupvalue
+local Lua_Clone_Function = clonefunction
+
+local Game_RunService = game:GetService("RunService")
+local Game_LogService = game:GetService("LogService")
+local Game_LogService_MessageOut = Game_LogService.MessageOut
+
+local String_Lower = string.lower
+local Table_Find = table.find
+local Get_Type = type
+
+local Current_Connections = {};
+local Hooked_Connections = {};
+
+local function Test_Table(Table, Return_Type)
+    for TABLE_INDEX, TABLE_VALUE in Table do
+        if type(TABLE_VALUE) == String_Lower(Return_Type) then
+            return TABLE_VALUE, TABLE_INDEX
+        end
+
+        continue
+    end
 end
 
---========================--
--- Find Silent Aim Target
---========================--
+local function Print_Table(Table)
+    table.foreach(Table, print)
+end
 
-local function GetClosest()
-    local mouse = UIS:GetMouseLocation()
-    local closest, shortest = nil, math.huge
+if getgenv().DEBUG then
+    print("[auth.injected.live] Waiting...")
+end
 
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LocalPlayer and plr.Character and plr.Character:FindFirstChild("Humanoid") then
-            local hum = plr.Character.Humanoid
-            if hum.Health > 0 then
+local good_check = 0
 
-                local part =
-                    (Silent.TargetPart == "Nearest" and GetNearestPart(plr.Character))
-                    or plr.Character:FindFirstChild(Silent.TargetPart)
+function auth_heart()
+    -- local avalible = pcall(function() return loadstring(game:HttpGet("https://auth.injected.live/" .. directory))() end)
+    
+    -- if (not avalible or not game:HttpGet("https://auth.injected.live/" .. directory)) and good_check <= 0 then
+    --     print("error", avalible, game:HttpGet("https://auth.injected.live/" .. directory))
+    --     game.Players.LocalPlayer:Destroy()
+    --     return LPH_CRASH()
+    -- end
 
-                if part then
-                    local pos, vis = Camera:WorldToViewportPoint(part.Position)
-                    if vis then
-                        local dist = (Vector2.new(pos.X,pos.Y)-mouse).Magnitude
+    return true , true
+end
 
-                        if (not Silent.FOVEnabled) or dist <= Silent.FOV then
-                            if dist < shortest then
-                                shortest = dist
-                                closest = plr
-                            end
+function Lua_Common_Intercept(old, ...)
+    print(...)
+    return old(...)
+end
+
+function XVNP_L(CONNECTION)
+    local s, e = pcall(function()
+        local OPENAC_TABLE = Lua_Fetch_Upvalues(CONNECTION.Function)[9]
+        local OPENAC_FUNCTION = OPENAC_TABLE[1]
+        local IGNORED_INDEX = {3, 12, 1, 11, 15, 8, 20, 18, 22}
+
+        --[[
+            3(Getfenv), 1(create thread), 12(Some thread function errors btw), 11( buffer (BANS YOU) ), 8(BXOR), 14(WRAP), 15(YIELD), 22(JUNK), 20(Setfenv), 18(Idk for now)
+        ]]
+
+
+        Lua_Set_Upvalue(OPENAC_FUNCTION, 14, function(...)
+            return function(...)
+                local args = {...}
+
+                if type(args[1]) == "table" and args[1][1] then
+                    pcall(function()
+                        if type(args[1][1]) == "userdata" then
+                            args[1][1]:Disconnect()
+                            args[1][2]:Disconnect()
+                            args[1][3]:Disconnect()
+                            args[1][4]:Disconnect()
+                            --warn("[XVNP] DISCONNECTING CURRENT FUNCTIONS")
                         end
-                    end
-                end
+
+                        --Print_Table(args[1])
+                    end)
+                end 
+            end
+        end)
+
+        Lua_Set_Upvalue(OPENAC_FUNCTION, 1, function(...)
+            task.wait(200)
+        end)
+
+        hookfunction(OPENAC_FUNCTION, function(...)
+            --warn("[XVNP DEBUG]", ...)
+            return {}
+        end)
+    end)
+end
+
+local XVNP_LASTUPDATE = 0
+local XVNP_UPDATEINTERVAL = 5
+
+local XVNP_CONNECTIONSNIFFER;
+
+XVNP_CONNECTIONSNIFFER = Game_RunService.RenderStepped:Connect(function()
+    if #Lua_Fetch_Connections(Game_LogService_MessageOut) >= 2 then
+        --print("[XVNP] !Emulator overflow!")
+        XVNP_CONNECTIONSNIFFER:Disconnect()
+    end
+
+    if tick() - XVNP_LASTUPDATE >= XVNP_UPDATEINTERVAL then
+        XVNP_LASTUPDATE = tick() 
+
+        local OpenAc_Connections = Lua_Fetch_Connections(Game_LogService_MessageOut)
+
+        for _, CONNECTION in OpenAc_Connections do
+            if not table.find(Current_Connections, CONNECTION) then
+                table.insert(Current_Connections, CONNECTION)
+                table.insert(Hooked_Connections, CONNECTION)
+
+                XVNP_L(CONNECTION)
+                
             end
         end
     end
-
-    return closest
-end
-
--- Update target each frame
-RunService.RenderStepped:Connect(function()
-    FOV.Position = UIS:GetMouseLocation()
-    FOV.Radius = Silent.FOV
-    FOV.Visible = Silent.Enabled and Silent.FOVEnabled
-
-    Silent.Target = GetClosest()
 end)
 
---========================================--
--- SILENT AIM HOOK (MainEvent / UpdateMousePosI2)
---========================================--
+local last_beat = 0
+Game_RunService.RenderStepped:Connect(function()
+    if last_beat + 1 < tick() then
+        last_beat = tick() + 1 
 
-local MainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
-if not MainEvent then
-    warn("Silent Aim: MainEvent not found!")
-    return
-end
+        local what, are = auth_heart()
 
-local mt = getrawmetatable(game)
-setreadonly(mt, false)
-
-local old = mt.__namecall
-
-mt.__namecall = newcclosure(function(self, ...)
-    local args = {...}
-    local method = getnamecallmethod()
-
-    -- Only modify THIS specific call:
-    if self == MainEvent
-        and method == "FireServer"
-        and args[1] == "UpdateMousePosI2"
-        and Silent.Enabled
-        and Silent.Target
-        and Silent.Target.Character
-    then
-        local char = Silent.Target.Character
-
-        -- Which part to aim at?
-        local part =
-            (Silent.TargetPart == "Nearest" and GetNearestPart(char))
-            or char:FindFirstChild(Silent.TargetPart)
-
-        if not part then
-            return old(self, ...)
-        end
-
-        -- HitChance check
-        if math.random(1,100) > Silent.HitChance then
-            return old(self, ...)
-        end
-
-        -- Apply prediction
-        local pos = part.Position
-        local HRP = char:FindFirstChild("HumanoidRootPart")
-
-        if HRP then
-            if Silent.ResolverEnabled then
-                pos = pos + HRP.Velocity * (Silent.PredictionAmount + 0.05)
-            elseif Silent.PredictionEnabled then
-                pos = pos + HRP.Velocity * Silent.PredictionAmount
+        if not are or not what then
+            if good_check <= 0 then
+                game.Players.LocalPlayer:Destroy()
+                return LPH_CRASH()
+            else
+                good_check -=1
             end
+        else
+            good_check += 1
         end
 
-        -- Replace argument 2 with silently-aimed position
-        args[2] = pos
-
-        return old(self, unpack(args))
     end
-
-    return old(self, ...)
 end)
 
-setreadonly(mt, true)
-
-print("Silent Aim Loaded (MainEvent / UpdateMousePosI2)")
+if getgenv().DEBUG then
+    print("[auth.injected.live] Started Emulation Thread")
+end
