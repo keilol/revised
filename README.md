@@ -2179,3 +2179,550 @@ function AddWindow(options)
     end
     return menu
 end
+
+-- ========================================================
+-- COMPLETE MERGED SCRIPT
+-- Aimbot + Visible FOV
+-- UI: custom (AddWindow/AddTab/AddSection/AddToggle/AddSlider/AddDropdown/AddTextbox/AddButton/AddList)
+-- ========================================================
+
+-- CALLBACKS (single definitions)
+local function onToggleChanged(name, value) print(name.." = "..tostring(value)) end
+local function onSliderChanged(name, value) print(name.." = "..tostring(value)) end
+local function onDropdownChanged(name, value) print(name.." = "..tostring(value)) end
+local function onTextboxChanged(name, value) print(name.." = "..tostring(value)) end
+local function onButtonPressed(name) print(name.." pressed") end
+
+-- SERVICES
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+-- SAFE Drawing availability
+local okDrawing, Drawing = pcall(function() return Drawing end)
+
+-- ===============
+-- STATE / SETTINGS
+-- ===============
+local aimbotOn = false
+local aimbot_holding = false
+local currentTarget = nil
+local sticky_enabled = false
+local sticky_target = nil
+local target_part_name = "Head"
+
+local fov_enabled = true
+local fov_radius = 90
+
+local smooth_enabled = false
+local smooth_mode = "Linear"
+local smooth_value = 5
+
+local prediction_enabled = false
+local prediction_amount = 0
+
+local wallcheck_enabled = false
+
+-- Bullet Redirection / Silent Aim state
+local Redirection = {
+	Enabled = false,
+	HitPart = "Head",
+	FOV = {
+		Visible = true,
+		Radius = 50,
+		Color = Color3.fromRGB(255, 255, 255),
+		Thickness = 1,
+		Transparency = 1
+	}
+}
+
+Redirection.Prediction = {
+    Enabled = false,
+    Amount = 0
+}
+
+-- Drawing circle
+local fov_circle
+if okDrawing and Drawing then
+    fov_circle = Drawing.new("Circle")
+    fov_circle.Color = Color3.fromRGB(255,255,255)
+    fov_circle.Thickness = 2
+    fov_circle.Radius = fov_radius
+    fov_circle.Filled = false
+    fov_circle.NumSides = 100
+    fov_circle.Transparency = 1
+    fov_circle.Visible = fov_enabled
+end
+
+-- ======================
+-- Utility / Targeting
+-- ======================
+local function safeNumber(s, fallback)
+    local n = tonumber(s)
+    if n == nil then return fallback or 0 end
+    return n
+end
+
+local function GetNearestPart(char)
+    local parts = {"Head","HumanoidRootPart","UpperTorso","LowerTorso"}
+    local mouse = UIS:GetMouseLocation()
+    local bestPart = nil
+    local bestDist = math.huge
+
+    for _, name in ipairs(parts) do
+        local part = char:FindFirstChild(name)
+        if part then
+            local pos, onScreen = Camera:WorldToViewportPoint(part.Position)
+            if onScreen then
+                local d = (Vector2.new(pos.X,pos.Y) - mouse).Magnitude
+                if d < bestDist then
+                    bestDist = d
+                    bestPart = part
+                end
+            end
+        end
+    end
+
+    return bestPart
+end
+
+local SmoothModes = {
+    Linear = function(t) return t end,
+    EaseIn = function(t) return t * t end,
+    EaseOut = function(t) return 1 - (1 - t)^2 end,
+    EaseInOut = function(t)
+        return (t < .5) and (2 * t * t) or (1 - ((-2 * t + 2)^2)/2)
+    end,
+    Exponential = function(t) return t^3 end,
+    Elastic = function(t) return math.sin(-13*(t+1)*math.pi/2) * 2^(-10*t) + 1 end,
+    Spring = function(t) return 1 - (math.cos(t * math.pi * 4) * math.exp(-4 * t)) end
+}
+
+local function GetClosestPlayerGeneric(useFov, radius)
+    local mouse = UIS:GetMouseLocation()
+    local best = nil
+    local bestDist = math.huge
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character and plr.Character.Parent then
+            local head = plr.Character:FindFirstChild("Head")
+            local hum = plr.Character:FindFirstChild("Humanoid")
+            if head and hum and hum.Health > 0 then
+                local pos, onScreen = Camera:WorldToViewportPoint(head.Position)
+                if onScreen then
+                    local d = (Vector2.new(pos.X,pos.Y) - mouse).Magnitude
+                    if (not useFov) or (d <= radius) then
+                        if d < bestDist then
+                            bestDist = d
+                            best = plr
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return best
+end
+
+local function GetClosestPlayerForAimbot()
+    return GetClosestPlayerGeneric(fov_enabled, fov_radius)
+end
+
+-- ======================
+-- Input handling (Aimbot Toggle on E)
+-- ======================
+UIS.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.E then
+        aimbot_holding = not aimbot_holding
+
+        if aimbot_holding then
+            if sticky_enabled then
+                if sticky_target and sticky_target.Character and sticky_target.Character:FindFirstChild("Humanoid") and sticky_target.Character.Humanoid.Health > 0 then
+                    currentTarget = sticky_target
+                    return
+                end
+                sticky_target = GetClosestPlayerForAimbot()
+                currentTarget = sticky_target
+            else
+                currentTarget = GetClosestPlayerForAimbot()
+            end
+        else
+            currentTarget = nil
+            if sticky_enabled then sticky_target = nil end
+        end
+    end
+end)
+
+-- ======================
+-- WALL CHECK / Visibility
+-- ======================
+local function IsVisible(origin, targetPart)
+    if not targetPart then return false end
+    local originPos = origin.CFrame.Position
+    local dir = targetPart.Position - originPos
+    local dist = dir.Magnitude
+
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Blacklist
+    params.FilterDescendantsInstances = {targetPart.Parent}
+
+    local result = workspace:Raycast(originPos, dir.Unit * dist, params)
+    return (not result) or result.Instance:IsDescendantOf(targetPart.Parent)
+end
+
+local function UpdateTracking(origin, target)
+    if not target or not target.Character then return nil end
+    local head = target.Character:FindFirstChild("Head")
+    if not head then return nil end
+    if wallcheck_enabled and not IsVisible(origin, head) then
+        return nil
+    end
+    return target
+end
+
+local function IsVisibleAgain(origin, target)
+    if not target or not target.Character then return false end
+    local head = target.Character:FindFirstChild("Head")
+    if not head then return false end
+    return IsVisible(origin, head)
+end
+
+local function GetSmoothFactor(dt, speed)
+    local normalized = math.clamp(speed/100,0,1)
+    local alpha = 1 - math.pow(1 - normalized, dt*60)
+    local mode = SmoothModes[smooth_mode]
+    return mode and mode(alpha) or alpha
+end
+
+-- ======================
+-- Main RenderStepped (Aimbot + FOV Draw)
+-- ======================
+RunService.RenderStepped:Connect(function(dt)
+    local mouse = UIS:GetMouseLocation()
+
+    -- Update FOV circle
+    if fov_circle then
+        fov_circle.Position = mouse
+        fov_circle.Radius = fov_radius
+        fov_circle.Visible = fov_enabled
+    end
+
+    -- Sticky auto-unlock
+    if sticky_enabled and sticky_target then
+        local hum = sticky_target.Character and sticky_target.Character:FindFirstChild("Humanoid")
+        if (not sticky_target.Character) or (not hum) or hum.Health <= 0 then
+            sticky_target = nil
+            currentTarget = nil
+        end
+    end
+
+    -- Wall check
+    if wallcheck_enabled then
+        if currentTarget then
+            local checked = UpdateTracking(Camera, currentTarget)
+            if not checked then
+                if sticky_enabled then sticky_target = currentTarget end
+                currentTarget = nil
+            end
+        elseif sticky_enabled and sticky_target then
+            if IsVisibleAgain(Camera, sticky_target) then
+                currentTarget = sticky_target
+            end
+        end
+    end
+
+    currentTarget = UpdateTracking(Camera, currentTarget)
+
+    -- Aimbot camera lock
+    if aimbotOn and aimbot_holding and currentTarget and currentTarget.Character then
+        local char = currentTarget.Character
+        local targetPart = (target_part_name=="Nearest part") and GetNearestPart(char) or char:FindFirstChild(target_part_name)
+        targetPart = targetPart or char:FindFirstChild("Head")
+        if not targetPart then return end
+
+        local aimPos = targetPart.Position
+        local HRP = char:FindFirstChild("HumanoidRootPart")
+        if prediction_enabled and HRP then
+            aimPos = aimPos + HRP.Velocity * prediction_amount
+        end
+
+        local desired = CFrame.new(Camera.CFrame.Position, aimPos)
+        if smooth_enabled then
+            local alpha = GetSmoothFactor(dt, smooth_value)
+            Camera.CFrame = Camera.CFrame:Lerp(desired, alpha)
+        else
+            Camera.CFrame = desired
+        end
+    end
+end)
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+local Camera = workspace.CurrentCamera
+
+-- Silent Aim FOV Circle
+local Circle = Drawing.new("Circle")
+Circle.Color = Redirection.FOV.Color
+Circle.Thickness = Redirection.FOV.Thickness
+Circle.Filled = false
+Circle.Transparency = Redirection.FOV.Transparency
+Circle.Radius = Redirection.FOV.Radius
+
+local function ClosestTarget()
+	local closestPart, dist = nil, math.huge
+	local mousePos = UserInputService:GetMouseLocation()
+
+	for _, v in pairs(Players:GetPlayers()) do
+		if v ~= LocalPlayer and v.Character then
+			local part = v.Character:FindFirstChild(Redirection.HitPart)
+			local hum = v.Character:FindFirstChild("Humanoid")
+			local root = v.Character:FindFirstChild("HumanoidRootPart")
+
+			if part and hum and hum.Health > 0 then
+				local aimPos = part.Position
+				
+				-- ================
+				-- Prediction
+				-- ================
+				if Redirection.Prediction.Enabled and root then
+					aimPos = aimPos + (root.Velocity * Redirection.Prediction.Amount)
+				end
+				
+				local screenPos, onScreen = Camera:WorldToScreenPoint(aimPos)
+				if onScreen then
+					local mag = (mousePos - Vector2.new(screenPos.X, screenPos.Y)).Magnitude
+					if mag <= Redirection.FOV.Radius and mag < dist then
+						dist = mag
+						closestPart = {
+							part = part,
+							pos = aimPos
+						}
+					end
+				end
+			end
+		end
+	end
+
+	return closestPart
+end
+
+local raw = getrawmetatable(game)
+local old = raw.__index
+setreadonly(raw, false)
+
+raw.__index = newcclosure(function(self, key)
+	if not checkcaller() and self == Mouse and Redirection.Enabled then
+		if key == "Hit" or key == "Target" then
+if target then
+    -- target.pos contains predicted position (or normal)
+    return CFrame.new(target.pos)
+end
+		end
+	end
+	return old(self, key)
+end)
+
+RunService.RenderStepped:Connect(function()
+	Circle.Visible = Redirection.FOV.Visible and Redirection.Enabled
+	Circle.Position = UserInputService:GetMouseLocation()
+	Circle.Radius = Redirection.FOV.Radius
+	Circle.Color = Redirection.FOV.Color
+	Circle.Thickness = Redirection.FOV.Thickness
+	Circle.Transparency = Redirection.FOV.Transparency
+end)
+
+-- ======================
+-- UI BUILD (Aimbot only)
+-- ======================
+local window = AddWindow()
+do
+    local combat = window:AddTab({name = "combat"})
+    combat:AddTab({name = "legitbot"})
+
+    ----------------------------------------------------------
+    -- AIMBOT (LEFT SIDE)
+    ----------------------------------------------------------
+
+    local legit = combat:AddSection({
+        tab = "legitbot",
+        name = "Aimbot",
+        side = "left",
+        height = "fill"
+    })
+
+    local t = legit:AddToggle({
+        name = "Enabled",
+        default = false,
+        callback = function(v)
+            aimbotOn = v
+        end
+    })
+    if t and t.AddKeybind then t:AddKeybind() end
+
+    legit:AddToggle({
+        name = "Sticky Mode",
+        default = false,
+        callback = function(v)
+            sticky_enabled = v
+        end
+    })
+
+    legit:AddToggle({
+        name = "Fov",
+        default = true,
+        callback = function(v)
+            fov_enabled = v
+        end
+    })
+
+    legit:AddToggle({
+        name = "Enable Smoothness",
+        default = false,
+        callback = function(v)
+            smooth_enabled = v
+        end
+    })
+
+    legit:AddToggle({
+        name = "Enable Prediction",
+        default = false,
+        callback = function(v)
+            prediction_enabled = v
+        end
+    })
+
+    legit:AddTextbox({
+        name = "Prediction",
+        default = tostring(prediction_amount),
+        callback = function(text)
+            prediction_amount = safeNumber(text, 0)
+        end
+    })
+
+    legit:AddSlider({
+        name = "Smoothness",
+        min = 0,
+        max = 100,
+        default = smooth_value,
+        callback = function(v)
+            smooth_value = v
+        end
+    })
+
+    legit:AddSlider({
+        name = "Fov",
+        min = 10,
+        max = 300,
+        default = fov_radius,
+        callback = function(v)
+            fov_radius = v
+        end
+    })
+
+    legit:AddDropdown({
+        name = "Smoothness Type",
+        list = {"Linear","EaseIn","EaseOut","EaseInOut","Exponential","Elastic","Spring"},
+        callback = function(v)
+            smooth_mode = v
+        end
+    })
+
+    legit:AddDropdown({
+        name = "Target selection",
+        list = {"Head","HumanoidRootPart","UpperTorso","LowerTorso","Nearest part"},
+        callback = function(v)
+            target_part_name = v
+        end
+    })
+
+    legit:AddToggle({
+        name = "Wall Check",
+        default = false,
+        callback = function(v)
+            wallcheck_enabled = v
+        end
+    })
+
+    ----------------------------------------------------------
+    -- BULLET REDIRECTION (RIGHT SIDE)
+    ----------------------------------------------------------
+
+    local bulletRedirection = combat:AddSection({
+        tab = "legitbot",
+        name = "Bullet Redirection",
+        side = "right",
+        height = "fill"
+    })
+
+    bulletRedirection:AddToggle({
+        name = "Enabled",
+        default = false,
+        callback = function(v)
+            Redirection.Enabled = v
+        end
+    })
+
+    bulletRedirection:AddToggle({
+        name = "Fov",
+        default = true,
+        callback = function(v)
+            Redirection.FOV.Visible = v
+        end
+    })
+
+    bulletRedirection:AddSlider({
+        name = "Fov Radius",
+        min = 10,
+        max = 300,
+        default = Redirection.FOV.Radius,
+        callback = function(v)
+            Redirection.FOV.Radius = v
+        end
+    })
+
+    bulletRedirection:AddToggle({
+        name = "Prediction",
+        default = false,
+        callback = function(v)
+            Redirection.Prediction.Enabled = v
+        end
+    })
+
+    bulletRedirection:AddTextbox({
+        name = "Prediction Amount",
+        default = tostring(Redirection.Prediction.Amount),
+        callback = function(v)
+            local n = tonumber(v)
+            if n then
+                Redirection.Prediction.Amount = n
+            end
+        end
+    })
+
+    bulletRedirection:AddDropdown({
+        name = "HitPart",
+        list = {
+            "Head",
+            "HumanoidRootPart",
+            "UpperTorso",
+            "LowerTorso",
+            "LeftUpperArm",
+            "RightUpperArm"
+        },
+        callback = function(v)
+            Redirection.HitPart = v
+        end
+    })
+
+    ----------------------------------------------------------
+
+    combat:AddTab({name = "triggerbot"})
+    combat:AddTab({name = "other"})
+end
